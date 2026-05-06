@@ -1,0 +1,7 @@
+videos/
+sam3/out/
+sam3/in/
+sam3/assets/
+
+.env
+sam3/.env
