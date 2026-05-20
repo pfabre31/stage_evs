@@ -195,16 +195,45 @@ def run_batch(prompt: str, input_dir: str, out_dir: str, step: int, recursive: b
 
     print(f"Found {len(videos)} video(s) to process")
     out_root = Path(out_dir)
-    clean_dir(out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
 
     predictor = build_sam3_video_predictor()
 
     batch_results = []
+    skipped = 0
+    failed = []
     for i, video in enumerate(videos, 1):
         rel = video.relative_to(folder).with_suffix("")
         video_out = out_root / rel
+
+        # Skip already processed videos
+        if (video_out / "summary.json").exists():
+            print(f"\n[{i}/{len(videos)}] {video.name} — SKIP (already done)")
+            existing = json.loads((video_out / "summary.json").read_text())
+            batch_results.append({
+                "video": existing["video"],
+                "path": str(video),
+                "out_dir": str(video_out),
+                "video_fps": existing.get("video_fps"),
+                "video_duration_s": existing.get("video_duration_s"),
+                "total_frames_processed": existing.get("total_frames_processed", 0),
+                "frames_with_detections": existing.get("frames_with_detections", 0),
+                "total_mask_images": existing.get("total_mask_images", 0),
+                "tracked_objects_count": existing.get("tracked_objects_count", 0),
+                "tracked_obj_ids": existing.get("tracked_obj_ids", []),
+                "summary_file": str(video_out / "summary.json"),
+            })
+            skipped += 1
+            continue
+
         print(f"\n[{i}/{len(videos)}] {video.name}")
-        summary = process_video(prompt, video, video_out, step, predictor)
+        try:
+            summary = process_video(prompt, video, video_out, step, predictor)
+        except Exception as e:
+            print(f"  ERROR — skipping {video.name}: {e}")
+            failed.append({"video": video.name, "path": str(video), "error": str(e)})
+            continue
+
         batch_results.append({
             "video": summary["video"],
             "path": str(video),
@@ -225,6 +254,8 @@ def run_batch(prompt: str, input_dir: str, out_dir: str, step: int, recursive: b
         "input_dir": str(folder),
         "recursive": recursive,
         "total_videos": len(videos),
+        "skipped_already_done": skipped,
+        "failed": failed,
         "total_frames_processed": sum(r["total_frames_processed"] for r in batch_results),
         "total_frames_with_detections": sum(r["frames_with_detections"] for r in batch_results),
         "total_mask_images": sum(r["total_mask_images"] for r in batch_results),
@@ -232,11 +263,15 @@ def run_batch(prompt: str, input_dir: str, out_dir: str, step: int, recursive: b
         "videos": batch_results,
     }
     batch_path = out_root / "batch_summary.json"
-    out_root.mkdir(parents=True, exist_ok=True)
     batch_path.write_text(json.dumps(batch_summary, indent=2))
 
     print(f"\n{'='*60}")
-    print(f"Batch done — {len(videos)} video(s) processed")
+    print(f"Batch done — {len(videos)} video(s) total")
+    print(f"  Skipped (already done): {skipped}")
+    print(f"  Failed (corrupted)    : {len(failed)}")
+    if failed:
+        for f in failed:
+            print(f"    - {f['video']}: {f['error']}")
     print(f"  Total frames analysed : {batch_summary['total_frames_processed']}")
     print(f"  Total masks saved     : {batch_summary['total_mask_images']}")
     print(f"  Batch summary         : {batch_path.resolve()}")
